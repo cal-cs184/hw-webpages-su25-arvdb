@@ -28,79 +28,544 @@
 	<body>
 		<div class="container">
 		<h1>CS184/284A Spring 2025 Homework 3 Write-Up</h1>
-		<div style="text-align: center;">Names: </div>
+		<div style="text-align: center;">Names: Arvinder Dhillon </div>
 
 		<br>
 
-		Link to webpage: (TODO) <a href="https://cs184.eecs.berkeley.edu/sp25">cs184.eecs.berkeley.edu/sp25</a>
-		Link to GitHub repository: (TODO) <a href="https://cs184.eecs.berkeley.edu/sp25">cs184.eecs.berkeley.edu/sp25</a>
+		Link to webpage:  <a href="https://cal-cs184.github.io/hw-webpages-su25-arvdb/hw3/index.html">webpage</a>
+		Link to GitHub repository: <a href="https://github.com/cal-cs184/hw-pathtracer-updated-arvdd">github</a>
 		
 		<figure>
 			<img src="cornell.png" alt="Cornell Boxes with Bunnies" style="width:70%"/>
 			<figcaption>You can add images with captions!</figcaption>
 		</figure>
 
-		<!--
-		We've already added one heading per part, to make your write-up as navigable when grading. Please fit your write-up within these sections!
-		-->
-
-		<h2>Overview</h2>
-		Give a high-level overview of what you implemented in this homework. Think about what you've built as a whole. Share your thoughts on what interesting things you've learned from completing the homework.
+		
+<h2>Overview</h2>
+<p>
+  In this assignment I built a minimal Monte Carlo path tracer end-to-end: camera ray generation, triangle/sphere intersections,
+  and a BVH for acceleration; direct lighting via both uniform hemisphere sampling and light importance sampling; global illumination
+  with cosine-weighted BSDF sampling, fixed-depth recursion, and Russian Roulette; and adaptive sampling to reallocate effort to
+  high-variance pixels. I learned how variance explodes when the sampling strategy is mismatched to the integrand (uniform hemisphere)
+  and how light sampling dramatically reduces noise in soft shadows. I also saw how a simple centroid-split BVH slashes intersection
+  counts and makes complex meshes tractable. Most importantly, multi-bounce transport at roughly m=2–3 produces the soft color bleeding
+  and occlusion falloff that rasterization can’t capture without hand-tuned hacks.
+</p>
 
 		<h2>Part 1: Ray Generation and Scene Intersection</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
 
-		<p>Here is an example 2x2 gridlike structure using an HTML table. Each <b>tr</b> is a row and each <b>td</b> is a column in that row. You might find this useful for framing and showing your result images in an organized fashion.</p>
-		<div style="display: flex; flex-direction: column; align-items: center;">
-			<table style="width: 100%; text-align: center; border-collapse: collapse;">
-			  <tr>
-				<td style="text-align: center;">
-				  <img src="cornell.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-				<td style="text-align: center;">
-				  <img src="cornell.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-			  </tr>
-			  <tr>
-				<td style="text-align: center;">
-				  <img src="cornell.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-				<td style="text-align: center;">
-				  <img src="cornell.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-			  </tr>
-			</table>
-		</div>
+		<h3>Task 1: Generating Camera Rays</h3>
+		<p>
+		I implemented <code>Camera::generate_ray</code> to convert normalized image coordinates <code>(x, y)</code> into a ray in world space. 
+		First, the coordinates are mapped to the sensor plane in camera space using the horizontal and vertical field of view to determine the sensor extents. 
+		The ray origin is at the camera position, and its direction is the normalized vector from the origin to the mapped point on the sensor plane. 
+		This direction is then transformed from camera space to world space using the <code>c2w</code> matrix. 
+		Finally, I set <code>min_t</code> and <code>max_t</code> to the near and far clip values.
+		</p>
+		<h3>Task 2: Generating Pixel Samples</h3>
+		<p>
+		The function <code>PathTracer::raytrace_pixel(...)</code> estimates the radiance for a given pixel by averaging multiple camera rays sampled within that pixel. 
+		For each of the <code>ns_aa</code> samples, a random 2D offset within the pixel is generated using <code>gridSampler->get_sample()</code>. 
+		This offset is added to the pixel’s integer coordinates to produce a sample location in image space, which is then normalized to the <code>[0,1]^2</code> range by dividing by the image width and height. 
+		The normalized coordinates are passed to <code>Camera::generate_ray</code> to produce a world-space ray corresponding to that sample location.
+		</p>
+		<p>
+		Each ray is traced through the scene by calling <code>est_radiance_global_illumination</code>, and the returned radiance value is accumulated. 
+		After all samples have been processed, the accumulated radiance is divided by the number of samples to obtain the Monte Carlo estimate for that pixel. 
+		The result is stored in <code>sampleBuffer</code> using <code>update_pixel</code>.
+		</p>
+		
+		<h4>Results</h4>
+		<p>
+		The following images show the output after implementing Tasks 1 and 2:
+		</p>
+		<ul>
+		  <li><code>CBempty.png</code> </li>
+		</ul>
+		<img src="CBempty.png" alt="CBempty.png – debug color gradient for ray directions">
+		<ul>
+			<li><code>banana.png</code></li>
+		  </ul>
+		<img src="banana.png" alt="banana.png – banana scene with normal shading">
+		<h3>Task 3: Ray–Triangle Intersection</h3>
+		<p>
+		I implemented ray–triangle intersection using the Möller–Trumbore algorithm. Let the triangle vertices be 
+		<code>p1, p2, p3</code> and the ray be <code>r(t) = r.o + t r.d</code>. I form edges 
+		<code>e1 = p2 - p1</code> and <code>e2 = p3 - p1</code>, compute 
+		<code>pvec = r.d × e2</code> and <code>det = e1 · pvec</code>, and reject if <code>|det|</code> is near zero (ray parallel to triangle).
+		With <code>invDet = 1/det</code>, I compute <code>tvec = r.o - p1</code>, the barycentric 
+		<code>u = (tvec · pvec) invDet</code>, then <code>qvec = tvec × e1</code> and 
+		<code>v = (r.d · qvec) invDet</code>. The hit is inside the triangle only if 
+		<code>u ≥ 0</code>, <code>v ≥ 0</code>, and <code>u + v ≤ 1</code>. The intersection distance is 
+		<code>t = (e2 · qvec) invDet</code>.
+		</p>
+		<p>
+		I enforce the ray’s valid interval by requiring <code>t ∈ [min_t, max_t]</code>. On a valid hit, I update 
+		<code>max_t</code> to <code>t</code> so farther intersections on this ray are ignored. In 
+		<code>Triangle::intersect</code>, I additionally populate the <code>Intersection</code>:
+		<code>isect-&gt;t = t</code>, the interpolated shading normal 
+		<code>isect-&gt;n = normalize((1−u−v) n1 + u n2 + v n3)</code>, 
+		<code>isect-&gt;primitive = this</code>, and <code>isect-&gt;bsdf = get_bsdf()</code>.
+		</p>
+		
+		<h4>Results (CBempty after task 3)</h4>
+		<img src="CBempty 2.png" alt="CBempty2.png – normal shading after triangle intersection">
+		<h3>Task 4: Ray–Sphere Intersection</h3>
+		<p>
+		I implemented ray–sphere intersection using the half-b quadratic form to match my code. For a sphere with center <code>o</code> and radius <code>r</code> and a ray <code>p(t) = r.o + t r.d</code>, substituting into <code>||p(t) - o||^2 = r^2</code> yields a quadratic in <code>t</code>. In code, I set:
+		<code>oc = r.o - o</code>, <code>a = dot(r.d, r.d)</code>, <code>bHalf = dot(oc, r.d)</code>, and <code>c = dot(oc, oc) - r*r</code>.
+		The discriminant is <code>disc = bHalf*bHalf - a*c</code>. If <code>disc &lt; 0</code>, there is no intersection. Otherwise:
+		<code>t1 = (-bHalf - sqrt(disc)) / a</code> and <code>t2 = (-bHalf + sqrt(disc)) / a</code> (then swap if needed so <code>t1 ≤ t2</code>).
+		</p>
+		<p>
+		In <code>Sphere::has_intersection</code>, I call the helper <code>test(...)</code> to compute <code>t1</code> and <code>t2</code>. I choose the closest valid root in the ray’s interval by trying <code>t1</code> first; if <code>t1</code> is outside <code>[r.min_t, r.max_t]</code>, I try <code>t2</code>. On a valid hit, I update <code>r.max_t</code> to the chosen <code>t</code> and return <code>true</code>.
+		</p>
+		<p>
+		In <code>Sphere::intersect</code>, I use the same selection logic, then fill the intersection record to match the implementation:
+		<code>i-&gt;t = t</code>, <code>i-&gt;n = normalize((r.o + t*r.d) - o)</code> (analytic sphere normal),
+		<code>i-&gt;primitive = this</code>, and <code>i-&gt;bsdf = get_bsdf()</code>.
+		</p>
+		
+		<h4>Results</h4>
+		<p>CBspheres.png </p>
+		<img src="CBspheres.png"CBspheres.png — spheres with normal/debug shading">
+		
+		<p>banana2.png.</p>
+		<img src="banana 2.png" alt="banana2.png — banana scene with normal shading">
+		
+		<p>beast.png</p>
+		<img src="beast.png" alt="beast.png — normal shading on complex mesh">
 		
 		<h2>Part 2: Bounding Volume Hierarchy</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h2>Part 3: Direct Illumination</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h2>Part 4: Global Illumination</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h2>Part 5: Adaptive Sampling</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h2>(Optional) Part 6: Extra Credit Opportunities</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
 		
-		<h2>Additional Notes (please remove)</h2>
-		<ul>
-			<li>You can also add code if you'd like as so: <code>code code code</code></li>
-			<li>If you'd like to add math equations, 
-				<ul>
-					<li>You can write inline equations like so: \( a^2 + b^2 = c^2 \)</li>
-					<li>You can write display equations like so: \[ a^2 + b^2 = c^2 \]</li>
-				</ul>
-			</li>
-		</ul>
+		<h3>Task 1: Constructing the BVH</h3>
+		<p>
+		I implemented a recursive BVH builder that returns a binary tree of <code>BVHNode</code>s. For a given range of primitives, I first compute the node’s bounding box by expanding over each primitive’s AABB. If the number of primitives is ≤ <code>max_leaf_size</code>, I create a leaf node by storing the iterator range <code>[start, end)</code>.
+		</p>
+		<p>
+		Otherwise, I compute the <em>centroid bounding box</em> and choose the split axis as the dimension with the largest centroid extent. I set the split position to the centroid box’s midpoint along that axis and partition primitives into left/right sets by comparing their AABB centroids to this split. If this yields a degenerate split (all centroids on one side), I fall back to a median split using <code>nth_element</code> (and finally, a count-based split if centroids are identical). I then recursively build the left and right children. This heuristic is simple, cache-friendly, and avoids infinite recursion while giving balanced trees in practice.
+		</p>
+		
+		<h3>Task 2: Intersecting the Bounding Box</h3>
+		<p>
+		I implemented the standard slab test for ray–AABB intersection. For each axis, I compute the parametric entry/exit times to the two planes using the ray’s origin and direction. I swap the two times if the direction is negative, then intersect these intervals across x, y, and z. If at any point the running interval becomes empty (<code>tmin > tmax</code>), the ray misses the box. I also handle parallel rays robustly: if the ray is parallel on an axis, I check that its origin lies within the box on that axis; otherwise, no hit. On success, I update <code>t0</code> and <code>t1</code> to the final interval where the ray is inside the AABB.
+		</p>
+		
+		<h3>Task 3: BVH Traversal — Timing Comparison</h3>
+		<p>
+		To evaluate the benefit of BVH traversal, I rendered the same scenes with and without the BVH acceleration structure. With BVH, rays are tested only against relevant primitives determined by the bounding volume hierarchy; without BVH, every ray is tested against every primitive in the scene.
+		</p>
+		
+		<h4>Results</h4>
+		
+		
+		<div>
+		  <h5>beetle.png (7,558 prims)</h5>
+		  <img src="beetle.png" alt="Beetle Render" width="400">
+		  <p>
+			<b>With BVH:</b> 0.188 s<br>
+			<b>Without BVH:</b> ~18.2 s<br>
+			<b>Speedup:</b> ~97× faster
+		  </p>
 		</div>
+		
+		<!-- Cow -->
+		<div>
+		  <h5>cow.png (~64k prims)</h5>
+		  <img src="cow.png" alt="Cow Render" width="400">
+		  <p>
+			<b>With BVH:</b> 0.175 s<br>
+			<b>Without BVH:</b> ~155 s<br>
+			<b>Speedup:</b> ~886× faster
+		  </p>
+		</div>
+		
+		<h4>Observation</h4>
+		<p>
+		With BVH, <code>cow.png</code> averaged <b>5.20 million</b> rays per second and ~<b>3.87</b> intersection tests per ray. Without BVH, the intersection tests per ray scale directly with the number of primitives, making render times several orders of magnitude longer. These results clearly demonstrate that BVH acceleration is essential for interactive path tracing on complex scenes.
+		</p>
+				
+		
+		<h2>Part 3: Direct Illumination</h2>
+		<h3>Task 1</h3>
+		<p>
+		I implemented a Lambertian (diffuse) BRDF for <code>DiffuseBSDF</code>. A diffuse surface reflects incoming light uniformly over the hemisphere; its BSDF is the constant
+		<span style="white-space:nowrap;"><code>f(wi → wo) = ρ / π</code></span>, where <code>ρ</code> is the RGB albedo stored in <code>reflectance</code>.
+		</p>
+		
+		<p><b>Implementation details</b></p>
+		<ul>
+		  <li><code>DiffuseBSDF::f(wo, wi)</code> returns <code>reflectance / π</code>. For a pure Lambertian, the value is independent of <code>wi</code> and <code>wo</code> (aside from the cosine factor applied during lighting integration).</li>
+		  <li><code>DiffuseBSDF::sample_f(wo, wi*, pdf*)</code> draws a cosine-weighted direction on the unit hemisphere via the provided sampler, writes it to <code>*wi</code>, sets <code>*pdf</code> accordingly, and returns <code>reflectance / π</code>. Using cosine-weighted sampling matches the integrand and reduces variance in later tasks.</li>
+		</ul>
+		<h3>Task 2</h3>
+		<p>
+		Zero-bounce illumination is light that reaches the camera without any surface reflections—i.e., direct emission from light sources only. I implemented
+		<code>zero_bounce_radiance(ray, isect)</code> to return the emitted radiance at the hit point via <code>isect.bsdf-&gt;get_emission()</code>. Then I updated
+		<code>est_radiance_global_illumination</code> to stop using the normal/debug colors and instead:
+		(1) if the ray misses, return the environment light sample (if present) or black; (2) if the ray hits, return <code>zero_bounce_radiance</code>.
+		</p>
+		<p>
+		After this change, scenes render with only emissive surfaces visible. For example, in the Cornell Box, the ceiling area light appears bright while the rest
+		of the scene remains dark (no reflected light yet). This establishes the base case we’ll build on in later tasks when adding direct and indirect illumination.
+		</p>
+		<h3>Task 3</h3>
+		<p>
+		I implemented <code>estimate_direct_lighting_hemisphere</code> to approximate the direct term in the rendering equation
+		by sampling uniformly over the hemisphere oriented at the surface normal. At a camera-ray hit point, I:
+		(1) build a local frame where the normal is +Z; (2) sample an incoming direction <code>wi</code> uniformly on the local hemisphere;
+		(3) transform <code>wi</code> to world space and trace a shadow ray from the hit point with <code>min_t = EPS_F</code>;
+		(4) if the shadow ray hits an <em>emissive</em> surface, I evaluate the BSDF in local space and accumulate a Monte Carlo estimate.
+		</p>
+		
+		<p><b>Estimator</b><br>
+		For uniform hemisphere sampling, the PDF is <code>1/(2π)</code>. Using Lambertian <code>f = ρ/π</code> (from Task 3.1), each sample contributes:
+		</p>
+		<pre><code>L_sample = f(wo, wi) * L_i * cosθ / pdf
+				 = (ρ/π) * L_i * (wi.z) / (1/(2π))
+				 = 2ρ * L_i * wi.z
+		</code></pre>
+		<p>
+		I average over <code>num_samples</code> to form an unbiased estimator. The cosine term comes from the rendering equation, and the
+		<code>EPS_F</code> offset prevents self-intersections.
+		</p>
+		
+		<p><b>Coordinate spaces</b><br>
+		The BSDF is evaluated in the <em>local</em> frame, so I compute <code>w_out = w2o * (-r.d)</code> and use the sampled
+		<code>wi_local</code>; only the shadow ray direction is converted to world space (<code>wi_world = o2w * wi_local</code>)
+		for intersection tests.
+		</p>
+		
+		<p><b>Integration</b><br>
+		I set <code>one_bounce_radiance</code> to call <code>estimate_direct_lighting_hemisphere</code>, and updated
+		<code>est_radiance_global_illumination</code> to return:
+		<code>L = zero_bounce_radiance + one_bounce_radiance</code>.
+		</p>
+		<h1>Task 4: Direct Lighting by Importance Sampling Lights</h1>
+
+		<h2>Implementation</h2>
+		<p>
+		For this task, I implemented <code>estimate_direct_lighting_importance</code> to improve convergence speed by sampling each light source directly, rather than uniformly sampling directions over the hemisphere. 
+		For each light in the scene, I:
+		</p>
+		<ol>
+		  <li>Determined the number of samples to take: 1 for delta lights (point lights), and <code>ns_area_light</code> for area lights.</li>
+		  <li>Used <code>SceneLight::sample_L</code> to obtain the incident radiance, direction to the light (<code>wi</code>), distance to the light, and the PDF.</li>
+		  <li>Checked if the light is behind the surface using <code>dot(isect.n, wi)</code>.</li>
+		  <li>Casted a shadow ray towards the light, stopping at <code>distToLight - EPS_F</code> to avoid self-intersections.</li>
+		  <li>If unoccluded, transformed <code>wi</code> into the shading point’s local coordinates and evaluated the BSDF.</li>
+		  <li>Accumulated the contribution: <code>f * Li * (cosTheta / pdf)</code>.</li>
+		</ol>
+		<p>
+		This approach focuses sampling on actual light sources, reducing variance in the resulting image and making it possible to render scenes lit only by point lights.
+		</p>
+		<h2>Uniform Hemisphere vs. Light Sampling — Bunny & CBspheres</h2>
+
+		<h3>Bunny</h3>
+		<div style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;">
+		  <figure style="margin:0;">
+			<img src="bunnyhemi.png" alt="Bunny - Uniform Hemisphere Sampling" width="420">
+			<figcaption style="text-align:center; margin-top:6px;">Uniform Hemisphere</figcaption>
+		  </figure>
+		  <figure style="margin:0;">
+			<img src="bunnylight.png" alt="Bunny - Light Importance Sampling" width="420">
+			<figcaption style="text-align:center; margin-top:6px;">Light Sampling (Importance)</figcaption>
+		  </figure>
+		</div>
+		
+		<h3>CBspheres</h3>
+		<div style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start; margin-top:10px;">
+		  <figure style="margin:0;">
+			<img src="spherehemi.png" alt="CBspheres - Uniform Hemisphere Sampling" width="420">
+			<figcaption style="text-align:center; margin-top:6px;">Uniform Hemisphere</figcaption>
+		  </figure>
+		  <figure style="margin:0;">
+			<img src="spherelight.png" alt="CBspheres - Light Importance Sampling" width="420">
+			<figcaption style="text-align:center; margin-top:6px;">Light Sampling (Importance)</figcaption>
+		  </figure>
+		</div>
+		
+		<h3>Analysis</h3>
+		<p>
+		Uniform hemisphere sampling produces significantly noisier results—especially in the soft shadow regions—because many sampled directions never reach a light and contribute nothing, leading to slow convergence. Light (importance) sampling directs rays toward the actual emitters, yielding far more non-zero contributions per pixel. As a result, for the same sample budget, importance sampling delivers cleaner shadows and overall lower variance, making it much more efficient and visually stable on scenes like the bunny and Cornell Box spheres.
+		</p>
+		<h2>Results (Light Sampling)</h2>
+		<p>
+		Below are images rendered for the bunny scene with a single area light, using <strong>importance sampling of lights</strong> and varying the number of light rays per pixel (<code>-l</code> flag). 
+		The sample rate per pixel (<code>-s</code>) is fixed at 1 to emphasize noise differences in the soft shadows.
+		</p>
+		
+		<div style="display: flex; flex-wrap: wrap; gap: 20px;">
+		  <figure>
+			<img src="bunny_light_L1_S1.png" alt="Bunny L=1 S=1" width="300">
+			<figcaption>L = 1, S = 1</figcaption>
+		  </figure>
+		  <figure>
+			<img src="bunny_light_L4_S1.png" alt="Bunny L=4 S=1" width="300">
+			<figcaption>L = 4, S = 1</figcaption>
+		  </figure>
+		  <figure>
+			<img src="bunny_light_L16_S1.png" alt="Bunny L=16 S=1" width="300">
+			<figcaption>L = 16, S = 1</figcaption>
+		  </figure>
+		  <figure>
+			<img src="bunny_light_L64_S1.png" alt="Bunny L=64 S=1" width="300">
+			<figcaption>L = 64, S = 1</figcaption>
+		  </figure>
+		</div>
+		
+		<h2>Observations</h2>
+		<p>
+		As the number of light samples per pixel increases, the noise in the soft shadows decreases significantly. 
+		With <code>L=1</code>, the shadows are extremely noisy due to high variance. 
+		By <code>L=64</code>, the shadows appear much smoother and closer to the converged result. 
+		This demonstrates how light sampling can effectively reduce noise by focusing sampling directions toward the light sources.
+		</p>
+		
+		<h2>Part 4: Global Illumination</h2>
+		<h3>Task 1 — Sampling with Diffuse BSDF</h3>
+		
+		<p>
+		I implemented <code>DiffuseBSDF::sample_f</code> for a Lambertian (diffuse) material. The goal is to both
+		(1) <em>sample</em> an incident direction <code>wi</code> according to a cosine-weighted hemisphere distribution,
+		and (2) return the BSDF value <code>f(wi → wo)</code> for that sampled direction. This aligns the sampling
+		distribution with the integrand of the rendering equation and reduces variance compared to uniform hemisphere
+		sampling.
+		</p>
+		
+		<p><b>Implementation</b></p>
+		<pre><code>// Lambertian BRDF (Task 3)
+		Vector3D DiffuseBSDF::f(const Vector3D wo, const Vector3D wi) {
+		  return reflectance / PI;  // ρ/π
+		}
+		
+		// Cosine-weighted sampling of wi (Task 4.1)
+		Vector3D DiffuseBSDF::sample_f(const Vector3D wo, Vector3D* wi, double* pdf) {
+		  *wi = sampler.get_sample(pdf);   // cosine-weighted on the upper hemisphere
+		  return reflectance / PI;         // f(wi → wo) for Lambertian
+		}
+		</code></pre>
+		<h2>Task 2 — Global Illumination with up to N Bounces</h2>
+
+		<p>
+		  Unlike direct lighting, which only accounts for light that travels straight from emitters to a surface,
+		  <em>global illumination</em> (GI) captures multi-bounce light transport. This adds soft interreflections and color
+		  bleeding (e.g., red/blue walls tinting nearby objects), which are essential for realistic renders.
+		</p>
+		
+		<p>
+		  I implemented a recursive integrator in <code>at_least_one_bounce_radiance</code>. At a camera-ray hit, I:
+		  (1) convert directions to the local frame (normal is +Z), (2) add the <em>direct</em> term via
+		  <code>one_bounce_radiance</code> (reusing my Part 3 implementation), (3) sample a BSDF direction
+		  <code>wi</code> with <code>sample_f</code>, (4) spawn a new ray in world space with an <code>EPS_F</code> offset,
+		  (5) decrement <code>depth</code>, and (6) recurse. If the child ray hits something, I accumulate its emission and its
+		  own (direct + indirect) radiance; if it misses, I add the environment light (if present).
+		</p>
+		
+		<pre><code>L_indirect = f(wo, wi) * Li * (cosθ / pdf)</code></pre>
+		
+		<p>
+		  The recursion stops when <code>depth &le; 1</code>. The full estimator returned by
+		  <code>est_radiance_global_illumination</code> is:
+		</p>
+		<pre><code>L = L_emission (zero-bounce) + L_direct + L_indirect (recursive)</code></pre>
+		
+		<p>
+		  <b>Why the factors?</b> The <code>cosθ</code> term is the foreshortening from the rendering equation, and dividing by
+		  <code>pdf</code> makes the Monte Carlo estimator unbiased. This, combined with a cosine-weighted BRDF sampler, keeps
+		  the estimator energy-consistent and reduces variance.
+		</p>
+		
+		<p>
+		  <b>Bounce counts.</b> I used <code>max_ray_depth</code> to control the number of bounces. Low depths (e.g., 1–2) add a
+		  noticeable soft fill; higher depths (e.g., 5) further smooth indirect light and enhance color bleeding but cost more
+		  time. All rays are initialized with <code>r.depth = max_ray_depth</code>.
+		</p>
+		
+		<p><b>Space & numerics.</b> BSDF sampling/evaluation happens in the local frame; rays and intersections are in world space.
+		I offset new rays by <code>EPS_F</code> and clamp using each ray’s <code>min_t/max_t</code> to avoid self-intersections.</p>
+		
+		<h3>Global Illumination Results (1024 spp)</h3>
+		<p>Rendered with direct + indirect lighting.</p>
+		<img src="bunny_global_1024.png" alt="CBbunny global illumination (1024 spp)" width="640">
+		<img src="spheres1024.png" alt="CBspheres global illumination (1024 spp)" width="640">
+		
+		<h3>Direct-Only vs Indirect-Only (1024 spp)</h3>
+		<p>
+		  To isolate contributions, I toggled terms inside <code>at_least_one_bounce_radiance</code>:
+		  direct-only disables the recursive leg; indirect-only disables the direct term (but still traces bounces).
+		</p>
+		<div style="display:flex; gap:16px; flex-wrap:wrap;">
+		  <figure style="margin:0;">
+			<img src="spheredirect.png" alt="Direct only (1024 spp)" width="480">
+			<figcaption style="text-align:center;margin-top:6px;">Direct Only (1024 spp)</figcaption>
+		  </figure>
+		  <figure style="margin:0;">
+			<img src="sphereindirect.png" alt="Indirect only (1024 spp)" width="480">
+			<figcaption style="text-align:center;margin-top:6px;">Indirect Only (1024 spp)</figcaption>
+		  </figure>
+		</div>
+		
+		<h3>Implementation Notes / Hooks</h3>
+		<ul>
+		  <li>Primary rays are initialized with <code>r.depth = max_ray_depth</code> in <code>raytrace_pixel</code>.</li>
+		  <li>Direct lighting reuses my Part 3 methods (hemisphere or importance sampling) via <code>one_bounce_radiance</code>.</li>
+		  <li>Exactly one BSDF sample per bounce; contributions are weighted by <code>f * cosθ / pdf</code> and gated by depth.</li>
+		</ul>
+		<h2>Part 4 — Task 3: Global Illumination with Russian Roulette</h2>
+
+		<h3>Implementation (What I changed)</h3>
+		<p>
+		I extended <code>at_least_one_bounce_radiance</code> to recurse for indirect lighting and added
+		<strong>Russian Roulette</strong> termination. After sampling a BSDF direction <code>wi</code> (local frame),
+		I spawn a child ray in world space with an <code>EPS_F</code> offset and depth–1. If the child ray hits,
+		I add the next hit’s emission and (when accumulating) its direct term, then recurse. I use a continuation
+		probability <code>p = 0.35</code>; when the path continues I scale the throughput by <code>1/p</code> to keep
+		the estimator unbiased. The indirect contribution per bounce is:
+		</p>
+		<pre><code>L += (1/p) * f(wo, wi) * Li * (cosθ / pdf)   with cosθ = wi_local.z</code></pre>
+		<p>
+		This supports both “unaccumulated m-th bounce” (<code>isAccumBounces=false</code>) and “accumulated up to m”
+		(<code>isAccumBounces=true</code>) modes, plus RR runs at various max depths.
+		</p>
+		
+		<hr>
+		
+		<h3>CBbunny — Unaccumulated m-th Bounce (isAccumBounces = false, 1024 spp)</h3>
+		<p>Each image shows only the light from exactly the m-th bounce (no lower orders summed).</p>
+		<div style="display:flex; gap:12px; flex-wrap:wrap;">
+		  <figure style="margin:0;"><img src="1.png" width="300" alt="m=0 unaccum"><figcaption style="text-align:center;">m = 0</figcaption></figure>
+		  <figure style="margin:0;"><img src="2.png" width="300" alt="m=1 unaccum"><figcaption style="text-align:center;">m = 1</figcaption></figure>
+		  <figure style="margin:0;"><img src="3.png" width="300" alt="m=2 unaccum"><figcaption style="text-align:center;">m = 2</figcaption></figure>
+		  <figure style="margin:0;"><img src="4.png" width="300" alt="m=3 unaccum"><figcaption style="text-align:center;">m = 3</figcaption></figure>
+		  <figure style="margin:0;"><img src="5.png" width="300" alt="m=4 unaccum"><figcaption style="text-align:center;">m = 4</figcaption></figure>
+		  <figure style="margin:0;"><img src="6.png" width="300" alt="m=5 unaccum"><figcaption style="text-align:center;">m = 5</figcaption></figure>
+		</div>
+
+		
+		<hr>
+		<h3>What the 2nd and 3rd Bounces Show (CBbunny)</h3>
+		<p>
+		At <b>m = 2 (second bounce)</b>, obvious <b>color bleeding</b> appears—the red and green walls softly tint nearby
+		surfaces—and shadowed regions lift from near-black to a gentle fill. This is the first bounce that clearly differentiates
+		global illumination from rasterization. At <b>m = 3 (third bounce)</b>, interreflections further <b>smooth ambient occlusion</b>
+		and reduce blotchiness in corners and under overhangs, giving softer contrast roll-off. Together, the 2nd and 3rd bounces
+		supply most of the perceptual realism (subtle fills, wall tinting, smoother contact shadows) that rasterization would need
+		manual ambient terms or SSAO-style tricks to approximate.
+		</p>
+
+		
+		<h3>CBbunny — Accumulated up to m (isAccumBounces = true, 1024 spp)</h3>
+		<p>Each image sums all bounces from 0..m. These approach the final GI look by m≈4–5.</p>
+		<div style="display:flex; gap:12px; flex-wrap:wrap;">
+		  <figure style="margin:0;"><img src="7.png" width="300" alt="m=0 accum"><figcaption style="text-align:center;">m = 0</figcaption></figure>
+		  <figure style="margin:0;"><img src="8.png" width="300" alt="m=1 accum"><figcaption style="text-align:center;">m = 1</figcaption></figure>
+		  <figure style="margin:0;"><img src="9.png" width="300" alt="m=2 accum"><figcaption style="text-align:center;">m = 2</figcaption></figure>
+		  <figure style="margin:0;"><img src="10.png" width="300" alt="m=3 accum"><figcaption style="text-align:center;">m = 3</figcaption></figure>
+		  <figure style="margin:0;"><img src="11.png" width="300" alt="m=4 accum"><figcaption style="text-align:center;">m = 4</figcaption></figure>
+		  <figure style="margin:0;"><img src="12.png" width="300" alt="m=5 accum"><figcaption style="text-align:center;">m = 5</figcaption></figure>
+		</div>
+		
+		<hr>
+		
+		<h3>CBbunny — Russian Roulette Series (1024 spp)</h3>
+		<p>Max depth set to m ∈ {0,1,2,3,4,100} with RR enabled (p=0.35). m=100 converges similarly to m≈4–5 but faster than fixed-depth without RR.</p>
+		<div style="display:flex; gap:12px; flex-wrap:wrap;">
+		  <figure style="margin:0;"><img src="rr0.png" width="300" alt="RR m=0"><figcaption style="text-align:center;">RR m = 0</figcaption></figure>
+		  <figure style="margin:0;"><img src="rr1.png" width="300" alt="RR m=1"><figcaption style="text-align:center;">RR m = 1</figcaption></figure>
+		  <figure style="margin:0;"><img src="rr2.png" width="300" alt="RR m=2"><figcaption style="text-align:center;">RR m = 2</figcaption></figure>
+		  <figure style="margin:0;"><img src="rr3.png" width="300" alt="RR m=3"><figcaption style="text-align:center;">RR m = 3</figcaption></figure>
+		  <figure style="margin:0;"><img src="rr4.png" width="300" alt="RR m=4"><figcaption style="text-align:center;">RR m = 4</figcaption></figure>
+		  <figure style="margin:0;"><img src="rr5.png" width="300" alt="RR m=100"><figcaption style="text-align:center;">RR m = 100</figcaption></figure>
+		</div>
+		
+		<hr>
+		
+		<h3>SPP Comparison on One Scene (4 light rays)</h3>
+		<p>Fixed <code>-l 4</code>; images at spp ∈ {1,2,4,8,16,64,1024} to show noise reduction with more camera samples.</p>
+		<div style="display:flex; gap:12px; flex-wrap:wrap;">
+		  <figure style="margin:0;"><img src="spheres_s1.png" width="220" alt="1 spp"><figcaption style="text-align:center;">1 spp</figcaption></figure>
+		  <figure style="margin:0;"><img src="spheres_s2.png" width="220" alt="2 spp"><figcaption style="text-align:center;">2 spp</figcaption></figure>
+		  <figure style="margin:0;"><img src="spheres_s4.png" width="220" alt="4 spp"><figcaption style="text-align:center;">4 spp</figcaption></figure>
+		  <figure style="margin:0;"><img src="spheres_s8.png" width="220" alt="8 spp"><figcaption style="text-align:center;">8 spp</figcaption></figure>
+		  <figure style="margin:0;"><img src="spheres_s16.png" width="220" alt="16 spp"><figcaption style="text-align:center;">16 spp</figcaption></figure>
+		  <figure style="margin:0;"><img src="spheres_s64.png" width="220" alt="64 spp"><figcaption style="text-align:center;">64 spp</figcaption></figure>
+		  <figure style="margin:0;"><img src="spheres_s1024.png" width="220" alt="1024 spp"><figcaption style="text-align:center;">1024 spp</figcaption></figure>
+		</div>
+		<h3>Note on Render Quality Differences</h3>
+		<p>
+		Some screenshots in this report look noisier than the final results. That’s intentional: the earlier images were rendered with
+		development settings to keep iteration fast (e.g., lower resolution, fewer camera samples, and fewer light samples). In particular,
+		I often used <code>-s 1–8</code> (camera samples) and <code>-l 1–4</code> (light samples) with a smaller image size and shallow
+		max depth (e.g., <code>-m 1–3</code>) while debugging. Later, the final images were rendered with higher quality settings
+		(e.g., <code>-s 64–1024</code>, <code>-l 16+</code>, <code>-m 5</code>) and importance sampling, which dramatically reduces variance.
+		Also, different random seeds naturally change the noise pattern from run to run. In short: the “worse” renders were quick test
+		renders; the cleaner ones use production settings.
+		</p>
+		<h2>Part 5: Adaptive Sampling</h2>
+
+		<p>
+		Adaptive sampling reduces render time by spending more samples on <em>hard</em> pixels (high variance: shadow edges, glossy highlights, indirect-lit corners) and fewer on <em>easy</em> pixels (flat, well-lit regions). For each pixel, after every batch of samples we estimate a 95% confidence interval on the pixel’s illuminance. If the half-width
+		<span style="white-space:nowrap;">I = 1.96 · σ / √n</span> is small relative to the mean μ—specifically <code>I ≤ maxTolerance · μ</code>—we consider the pixel converged and stop sampling it early. This yields near–noise-free results while avoiding a uniform, oversized spp budget.
+		</p>
+		
+		<h3>Implementation Summary</h3>
+		<ul>
+		  <li>In <code>raytrace_pixel()</code> I track per-pixel statistics over illuminance:
+			  <code>s1 = Σ x_k</code> and <code>s2 = Σ x_k²</code> (no need to store all samples).</li>
+		  <li>After every <code>samplesPerBatch</code> samples (e.g., 64), compute
+			  <code>μ = s1/n</code> and <code>σ² = (s2 - s1²/n)/(n-1)</code>, then
+			  <code>I = 1.96 · σ / √n</code>.</li>
+		  <li>If <code>I ≤ maxTolerance · μ</code> (e.g., tol = 0.05), stop early for that pixel.</li>
+		  <li>Store the actual samples used in <code>sampleCountBuffer</code> so the renderer writes a sampling-rate heatmap
+			  (<code>*_rate.png</code>): red = many samples, blue = few.</li>
+		</ul>
+		
+		<p><b>Render settings used:</b> 1 sample per light (<code>-l 1</code>), max depth ≥ 5 (<code>-m 5</code>), max spp 2048
+		(<code>-s 2048</code>), adaptive on with batches and tolerance (<code>-a 64 0.05</code>).
+		Images were saved with <code>-f</code>, producing both the final image and the <code>_rate</code> map.</p>
+		
+		<h3>Results — Scene 1 (CBbunny)</h3>
+		<div style="display:flex; gap:18px; flex-wrap:wrap;">
+		  <figure style="margin:0;">
+			<img src="bunny.png" alt="CBbunny adaptive render (2048 max spp, l=1, m=5)" width="480">
+			<figcaption style="text-align:center; margin-top:6px;">Final Render (Adaptive)</figcaption>
+		  </figure>
+		  <figure style="margin:0;">
+			<img src="bunny_rate.png" alt="CBbunny adaptive sampling rate map" width="480">
+			<figcaption style="text-align:center; margin-top:6px;">Sampling-Rate Map</figcaption>
+		  </figure>
+		</div>
+		
+		<h3>Results — Scene 2 (CBspheres_lambertian)</h3>
+		<div style="display:flex; gap:18px; flex-wrap:wrap;">
+		  <figure style="margin:0;">
+			<img src="spheres.png" alt="CBspheres adaptive render (2048 max spp, l=1, m=5)" width="480">
+			<figcaption style="text-align:center; margin-top:6px;">Final Render (Adaptive)</figcaption>
+		  </figure>
+		  <figure style="margin:0;">
+			<img src="spheres_rate.png" alt="CBspheres adaptive sampling rate map" width="480">
+			<figcaption style="text-align:center; margin-top:6px;">Sampling-Rate Map</figcaption>
+		  </figure>
+		</div>
+		
+		<p><b>Observations.</b> In both scenes, the heatmaps show higher sampling near shadow boundaries and corners with strong indirect light,
+		while smooth walls/floors use far fewer samples. The final images are essentially noise-free at a fraction of the cost of
+		uniform 2048 spp.</p>
+		
+		</div>
+		<h2>AI Acknowledgements</h2>
+		<p>
+		  This assignment was completed with assistance from AI tools, including ChatGPT-4.
+		  The AI was used to:
+		</p>
+		<ul>
+		  <li>Explain course concepts and clarify mathematical ideas related to ray tracing, BVH construction, and Monte Carlo integration.</li>
+		  <li>Assist in writing the project write-up by helping structure explanations and refine technical descriptions.</li>
+		  <li>Provide small code snippets or implementation hints, while the main algorithmic structure, logic, and debugging were done by myself.</li>
+		</ul>
+		<p>
+		</p>
+		
 	</body>
 </html>
